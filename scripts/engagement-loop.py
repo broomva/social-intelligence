@@ -138,7 +138,9 @@ def decode_challenge(challenge: str) -> float | None:
             return None
         # Only consider number words ≥ len(w) to avoid short-word false positives
         candidates = {k: v for k, v in WORD_TO_NUM.items() if len(k) >= len(w)}
-        hits = difflib.get_close_matches(w, candidates.keys(), n=1, cutoff=0.80)
+        # Cutoff 0.75: catches dedup artifacts like "fife"→"five" (ratio 0.75).
+        # Stop-word list handles common false positives ("for"→"four", "the"→"three").
+        hits = difflib.get_close_matches(w, candidates.keys(), n=1, cutoff=0.75)
         return candidates[hits[0]] if hits else None
 
     words   = deduped.split()
