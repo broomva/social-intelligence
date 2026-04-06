@@ -111,8 +111,10 @@ def decode_challenge(challenge: str) -> float | None:
     Returns the numeric answer or None if decode fails.
     """
     # 1. Lowercase everything, strip punctuation/symbol noise
+    #    IMPORTANT: remove noise chars WITHOUT adding spaces so intra-word noise
+    #    like "lO^bSt-Er" → "lobster" stays one token, not "lo bst er"
     text = challenge.lower()
-    text = re.sub(r"[^\w\s]", " ", text)  # remove ] ^ ~ | / < > { } - _ . , etc.
+    text = re.sub(r"[^\w\s]", "", text)   # remove ] ^ ~ | / < > { } - _ . , etc. (no space replacement)
     text = re.sub(r"\s+", " ", text).strip()
 
     # 2. Remove consecutive duplicate chars caused by alternating-case encoding
@@ -124,7 +126,7 @@ def decode_challenge(challenge: str) -> float | None:
     def _find_num(w: str) -> int | None:
         if w in WORD_TO_NUM:
             return WORD_TO_NUM[w]
-        hits = difflib.get_close_matches(w, WORD_TO_NUM.keys(), n=1, cutoff=0.75)
+        hits = difflib.get_close_matches(w, WORD_TO_NUM.keys(), n=1, cutoff=0.80)
         return WORD_TO_NUM[hits[0]] if hits else None
 
     words   = deduped.split()
