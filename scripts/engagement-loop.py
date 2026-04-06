@@ -121,24 +121,53 @@ def decode_challenge(challenge: str) -> float | None:
     #    e.g. "lloobsstteerr" → "lobster", "ttwweennttyy" → "twenty"
     deduped = re.sub(r"(.)\1+", r"\1", text)
 
-    # 3. Extract word-numbers in order (with fuzzy matching for dedup artifacts)
-    #    e.g. "thre" (from "three" with ee→e) still resolves to 3 via difflib
+    # 3. Extract word-numbers in order.
+    #    Known pitfalls in alternating-case + space-injected encoding:
+    #    a) Split-encoded words: "SeV eN" → ["sev","en"]; try bigram "seven" first
+    #    b) Fragment false positives: "tena" (from "antenna") ≈ "ten"
+    #       Fix: only fuzzy-match to number words at least as long as the query
+    #    c) Common-word false positives: "for" ≈ "four" (0.857 ratio)
+    #       Fix: stop-word exclusion list
+    _STOP = {"for", "the", "and", "but", "per", "nor", "not", "yet",
+             "can", "was", "are", "its", "has", "had", "let"}
+
     def _find_num(w: str) -> int | None:
         if w in WORD_TO_NUM:
             return WORD_TO_NUM[w]
-        hits = difflib.get_close_matches(w, WORD_TO_NUM.keys(), n=1, cutoff=0.80)
-        return WORD_TO_NUM[hits[0]] if hits else None
+        if len(w) < 3 or w in _STOP:
+            return None
+        # Only consider number words ≥ len(w) to avoid short-word false positives
+        candidates = {k: v for k, v in WORD_TO_NUM.items() if len(k) >= len(w)}
+        hits = difflib.get_close_matches(w, candidates.keys(), n=1, cutoff=0.80)
+        return candidates[hits[0]] if hits else None
 
     words   = deduped.split()
     tokens  = []
     i = 0
     while i < len(words):
-        w   = words[i]
+        w = words[i]
+        # Try bigram first: handles space-injected encodings like "sev en" → "seven"
+        if i + 1 < len(words):
+            bigram = words[i] + words[i + 1]
+            bval = _find_num(bigram)
+            if bval is not None:
+                # Check compound after bigram: "thir ty thre" → thirty-three = 33
+                if i + 2 < len(words):
+                    b2 = _find_num(words[i + 2])
+                    if b2 is not None and b2 < 10:
+                        bval += b2
+                        i += 3
+                        tokens.append(("num", bval))
+                        continue
+                tokens.append(("num", bval))
+                i += 2
+                continue
+        # Single word
         val = _find_num(w)
         if val is not None:
             # Compound: "twenty three" → 23
             if i + 1 < len(words):
-                nxt = _find_num(words[i+1])
+                nxt = _find_num(words[i + 1])
                 if nxt is not None and nxt < 10:
                     val += nxt
                     i += 2
@@ -149,12 +178,16 @@ def decode_challenge(challenge: str) -> float | None:
             tokens.append(("word", w))
         i += 1
 
-    # 4. Detect operation from keywords
-    flat = " ".join(str(v) if t == "num" else v for t, v in tokens)
+    # 4. Detect operation from keywords.
+    #    Search in spaceless deduped text (handles split-encoded op words like
+    #    "rEdU cEs" → "redu ces" → spaceless "reduces") but NOT in flat
+    #    (avoids "centimeters" containing "time" triggering multiply).
+    nospace = "".join(deduped.split())
+    flat    = " ".join(str(v) if t == "num" else v for t, v in tokens)
     op = "+"
-    if any(kw in flat for kw in ["slow", "reduc", "minus", "less", "subtract"]):
+    if any(kw in nospace for kw in ["slow", "reduc", "minus", "less", "subtract", "lower", "decreas"]):
         op = "-"
-    elif any(kw in flat for kw in ["time", "multipl", "work", "distanc", "force x", "x "]):
+    elif any(kw in nospace for kw in ["multipl", "product"]):
         op = "*"
 
     # 5. Compute
