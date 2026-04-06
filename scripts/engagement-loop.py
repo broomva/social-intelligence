@@ -14,6 +14,7 @@ Credentials (set via env or .env):
 """
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -105,60 +106,59 @@ WORD_TO_NUM = {
 def decode_challenge(challenge: str) -> float | None:
     """
     Decode Moltbook verification challenge.
-    Pattern: obfuscated alternating-caps text encoding a lobster-themed math problem.
+    Pattern: obfuscated alternating-case + noise chars encoding a lobster math problem.
+    Strategy: lowercase everything, strip noise, find word-numbers, infer operation.
     Returns the numeric answer or None if decode fails.
     """
-    # 1. Extract uppercase letters (the signal in alternating-caps encoding)
-    decoded = ""
-    i = 0
-    text = challenge
-    while i < len(text):
-        c = text[i]
-        if c.isupper():
-            decoded += c
-        elif c.isspace():
-            decoded += " "
-        i += 1
+    # 1. Lowercase everything, strip punctuation/symbol noise
+    text = challenge.lower()
+    text = re.sub(r"[^\w\s]", " ", text)  # remove ] ^ ~ | / < > { } - _ . , etc.
+    text = re.sub(r"\s+", " ", text).strip()
 
-    decoded = decoded.lower().strip()
-    # Clean residual noise
-    decoded = re.sub(r"[^\w\s]", " ", decoded)
-    decoded = re.sub(r"\s+", " ", decoded).strip()
+    # 2. Remove consecutive duplicate chars caused by alternating-case encoding
+    #    e.g. "lloobsstteerr" → "lobster", "ttwweennttyy" → "twenty"
+    deduped = re.sub(r"(.)\1+", r"\1", text)
 
-    # 2. Substitute word numbers
-    words = decoded.split()
-    numbers = []
+    # 3. Extract word-numbers in order (with fuzzy matching for dedup artifacts)
+    #    e.g. "thre" (from "three" with ee→e) still resolves to 3 via difflib
+    def _find_num(w: str) -> int | None:
+        if w in WORD_TO_NUM:
+            return WORD_TO_NUM[w]
+        hits = difflib.get_close_matches(w, WORD_TO_NUM.keys(), n=1, cutoff=0.75)
+        return WORD_TO_NUM[hits[0]] if hits else None
+
+    words   = deduped.split()
+    tokens  = []
     i = 0
     while i < len(words):
-        w = words[i]
-        # Handle compound like "twenty three"
-        if w in WORD_TO_NUM and i + 1 < len(words) and words[i+1] in WORD_TO_NUM:
-            next_val = WORD_TO_NUM[words[i+1]]
-            if next_val < 10:
-                numbers.append(("num", WORD_TO_NUM[w] + next_val))
-                i += 2
-                continue
-        if w in WORD_TO_NUM:
-            numbers.append(("num", WORD_TO_NUM[w]))
+        w   = words[i]
+        val = _find_num(w)
+        if val is not None:
+            # Compound: "twenty three" → 23
+            if i + 1 < len(words):
+                nxt = _find_num(words[i+1])
+                if nxt is not None and nxt < 10:
+                    val += nxt
+                    i += 2
+                    tokens.append(("num", val))
+                    continue
+            tokens.append(("num", val))
         else:
-            numbers.append(("word", w))
+            tokens.append(("word", w))
         i += 1
 
-    # 3. Find operation and operands
-    flat = " ".join(str(v) if t == "num" else v for t, v in numbers)
-
-    # Detect operation keywords
+    # 4. Detect operation from keywords
+    flat = " ".join(str(v) if t == "num" else v for t, v in tokens)
     op = "+"
-    if any(kw in flat for kw in ["slows", "reduces", "minus", "less", "subtract"]):
+    if any(kw in flat for kw in ["slow", "reduc", "minus", "less", "subtract"]):
         op = "-"
-    elif any(kw in flat for kw in ["times", "multiplies", "multiply", "work", "distance"]):
+    elif any(kw in flat for kw in ["time", "multipl", "work", "distanc", "force x", "x "]):
         op = "*"
 
-    # Extract numeric values in order
-    vals = [v for t, v in numbers if t == "num"]
+    # 5. Compute
+    vals = [v for t, v in tokens if t == "num"]
     if len(vals) < 2:
         return None
-
     a, b = vals[0], vals[1]
     if op == "+":
         return float(a + b)
